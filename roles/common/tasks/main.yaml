@@ -1,0 +1,136 @@
+---
+# ── Timezone ───────────────────────────────────────────────────────────────────
+
+- name: Set timezone
+  community.general.timezone:
+    name: "{{ timezone }}"
+
+# ── Packages ───────────────────────────────────────────────────────────────────
+
+- name: Install required packages
+  ansible.builtin.apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+      - nfs-common        # required for nfs-odin PVCs
+      - open-iscsi        # required for Longhorn
+      - util-linux
+    state: present
+    update_cache: true
+
+- name: Enable and start iscsid (Longhorn requirement)
+  ansible.builtin.systemd:
+    name: iscsid
+    enabled: true
+    state: started
+
+# ── SSH keys ───────────────────────────────────────────────────────────────────
+
+# Adds all keys defined in ssh_authorized_keys (env.yaml) to the node
+- name: Add SSH authorized keys
+  ansible.posix.authorized_key:
+    user: "{{ ansible_user }}"
+    state: present
+    key: "{{ item }}"
+  loop: "{{ ssh_authorized_keys }}"
+
+# ── Swap ───────────────────────────────────────────────────────────────────────
+
+# Kubernetes requires swap to be disabled
+- name: Disable swap
+  ansible.builtin.command: swapoff -a
+  changed_when: false
+
+- name: Remove swap from /etc/fstab
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^([^#].*\sswap\s.*)$'
+    replace: '# \1'
+
+# ── Kernel modules ─────────────────────────────────────────────────────────────
+
+# overlay and br_netfilter are required for container networking
+- name: Load required kernel modules
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - overlay
+    - br_netfilter
+
+- name: Persist kernel modules across reboots
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/kubernetes.conf
+    content: |
+      overlay
+      br_netfilter
+    mode: "0644"
+
+# ── Sysctl ─────────────────────────────────────────────────────────────────────
+
+# Required for Kubernetes networking and iptables to see bridged traffic
+- name: Set required sysctl params
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/99-kubernetes.conf
+    reload: true
+  loop:
+    - { key: net.bridge.bridge-nf-call-iptables,  value: "1" }
+    - { key: net.bridge.bridge-nf-call-ip6tables, value: "1" }
+    - { key: net.ipv4.ip_forward,                 value: "1" }
+
+# ── Multipath ──────────────────────────────────────────────────────────────────
+
+# multipathd can claim Longhorn block devices causing volume issues
+# blacklist all devices to prevent interference with Longhorn
+- name: Configure multipathd to blacklist all devices (Longhorn requirement)
+  ansible.builtin.copy:
+    dest: /etc/multipath.conf
+    content: |
+      blacklist {
+          devnode "^sd[a-z0-9]+"
+      }
+    mode: "0644"
+
+- name: Restart multipathd to apply blacklist
+  ansible.builtin.systemd:
+    name: multipathd
+    state: restarted
+    enabled: true
+
+# ── Containerd ─────────────────────────────────────────────────────────────────
+
+- name: Install containerd
+  ansible.builtin.apt:
+    name: containerd
+    state: present
+
+- name: Create containerd config directory
+  ansible.builtin.file:
+    path: /etc/containerd
+    state: directory
+    mode: "0755"
+
+- name: Generate default containerd config
+  ansible.builtin.shell: containerd config default > /etc/containerd/config.toml
+  args:
+    creates: /etc/containerd/config.toml
+
+# Required for containerd to use systemd as the cgroup driver
+# which Kubernetes expects by default
+- name: Enable SystemdCgroup in containerd config
+  ansible.builtin.replace:
+    path: /etc/containerd/config.toml
+    regexp: 'SystemdCgroup = false'
+    replace: 'SystemdCgroup = true'
+
+- name: Restart and enable containerd
+  ansible.builtin.systemd:
+    name: containerd
+    state: restarted
+    enabled: true
+    daemon_reload: true

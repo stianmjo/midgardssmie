@@ -1,0 +1,104 @@
+---
+# ── APT repo ──────────────────────────────────────────────────────────────────
+
+- name: Create apt keyrings directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Add Kubernetes apt GPG key
+  ansible.builtin.shell: >
+    curl -fsSL https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/Release.key
+    | gpg --dearmor -o {{ kubernetes_apt_keyring }}
+  args:
+    creates: "{{ kubernetes_apt_keyring }}"
+
+- name: Add Kubernetes apt repository
+  ansible.builtin.apt_repository:
+    repo: >
+      deb [signed-by={{ kubernetes_apt_keyring }}]
+      https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/ /
+    state: present
+    filename: kubernetes
+
+- name: Install kubeadm, kubelet, kubectl
+  ansible.builtin.apt:
+    name:
+      - "kubelet"
+      - "kubeadm"
+      - "kubectl"
+    state: present
+    update_cache: true
+
+- name: Hold kubeadm, kubelet, kubectl at current version
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - kubelet
+    - kubeadm
+    - kubectl
+
+- name: Enable and start kubelet
+  ansible.builtin.systemd:
+    name: kubelet
+    enabled: true
+    state: started
+
+# ── Control plane init (masters only) ─────────────────────────────────────────
+
+- name: Check if cluster is already initialized
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: kubeadm_init_done
+
+- name: Initialize Kubernetes cluster
+  ansible.builtin.command: >
+    kubeadm init
+    --pod-network-cidr={{ pod_cidr }}
+    --service-cidr={{ service_cidr }}
+    --skip-phases=addon/kube-proxy
+  when:
+    - inventory_hostname in groups['masters']
+    - not kubeadm_init_done.stat.exists
+  register: kubeadm_init_output
+
+- name: Create .kube directory for ansible_user
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.kube"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0700"
+  when: inventory_hostname in groups['masters']
+
+- name: Copy admin.conf to user kubeconfig
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: "/home/{{ ansible_user }}/.kube/config"
+    remote_src: true
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0600"
+  when: inventory_hostname in groups['masters']
+
+- name: Fetch kubeconfig to local machine
+  ansible.builtin.fetch:
+    src: /etc/kubernetes/admin.conf
+    dest: ./kubeconfig
+    flat: true
+  when: inventory_hostname in groups['masters']
+
+# ── Workers (uncomment when adding worker nodes) ──────────────────────────────
+# - name: Get join command from master
+#   ansible.builtin.command: kubeadm token create --print-join-command
+#   register: join_command
+#   delegate_to: "{{ groups['masters'][0] }}"
+#   when: inventory_hostname in groups['workers']
+#
+# - name: Join worker nodes
+#   ansible.builtin.command: "{{ join_command.stdout }}"
+#   when:
+#     - inventory_hostname in groups['workers']
+#     - not kubeadm_init_done.stat.exists

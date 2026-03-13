@@ -1,0 +1,45 @@
+---
+# ── Local Path Provisioner ─────────────────────────────────────────────────────
+# Installs rancher/local-path-provisioner which provides dynamic PVC provisioning
+# using local node storage. Used by Flux for its own internal storage so that
+# Longhorn (installed later via Flux) is not a dependency for Flux itself.
+
+# Check first so we can skip the install if already present (idempotent)
+- name: Check if local-path StorageClass already exists
+  ansible.builtin.command: kubectl get storageclass local-path
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  register: local_path_exists
+  changed_when: false
+  failed_when: false
+
+# Apply the official upstream manifest from rancher
+# Creates the local-path-storage namespace, RBAC, ConfigMap and Deployment
+- name: Install local-path-provisioner
+  kubernetes.core.k8s:
+    state: present
+    src: https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.32/deploy/local-path-storage.yaml
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  when: local_path_exists.rc != 0
+
+# Wait for the provisioner pod to be running before continuing
+- name: Wait for local-path-provisioner to be ready
+  ansible.builtin.command: >
+    kubectl wait deployment local-path-provisioner
+    --namespace local-path-storage
+    --for=condition=Available
+    --timeout=60s
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  changed_when: false
+
+# Mark as default so Flux and any other workloads that don't specify
+# a storageClass get local-path automatically
+- name: Set local-path as default StorageClass
+  ansible.builtin.command: >
+    kubectl patch storageclass local-path
+    -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  changed_when: false

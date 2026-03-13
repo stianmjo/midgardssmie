@@ -1,0 +1,54 @@
+---
+# Bootstrap a fresh Ubuntu node to a fully running Kubernetes cluster
+# with Cilium CNI and Flux GitOps pointing at stianmjo/homelab-nebulahvelvet.
+#
+# Usage:
+#   ansible-playbook site.yml
+#   ansible-playbook site.yml --tags common          # host prep only
+#   ansible-playbook site.yml --tags kubeadm         # install k8s only
+#   ansible-playbook site.yml --tags local-path      # install local-path-provisioner only
+#   ansible-playbook site.yml --tags cilium          # install Cilium only
+#   ansible-playbook site.yml --tags flux            # install Flux only
+
+- name: Bootstrap Kubernetes node
+  hosts: masters
+  become: true
+
+  pre_tasks:
+    - name: Verify Ansible version
+      ansible.builtin.assert:
+        that: ansible_version.full is version('2.14', '>=')
+        msg: "Ansible 2.14+ required"
+
+    - name: Verify target is Ubuntu
+      ansible.builtin.assert:
+        that: ansible_distribution == "Ubuntu"
+        msg: "Target must be Ubuntu"
+
+  roles:
+    - role: common
+      tags: common
+
+    - role: kubeadm
+      tags: kubeadm
+
+    - role: local-path
+      tags: local-path
+
+    - role: cilium
+      tags: cilium
+
+    - role: flux
+      tags: flux
+
+  post_tasks:
+    - name: Print cluster info
+      ansible.builtin.command: kubectl cluster-info
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: false
+      register: cluster_info
+
+    - name: Show cluster info
+      ansible.builtin.debug:
+        msg: "{{ cluster_info.stdout_lines }}"

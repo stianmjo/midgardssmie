@@ -1,0 +1,26 @@
+---
+# ── Kubernetes ─────────────────────────────────────────────────────────────────
+kubernetes_version: "1.35"
+kubernetes_apt_keyring: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+# Pod CIDR — IP range assigned to pods
+pod_cidr: "10.244.0.0/16"
+
+# Service CIDR — IP range assigned to ClusterIP services internally
+service_cidr: "10.96.0.0/12"
+
+# ── Cilium ─────────────────────────────────────────────────────────────────────
+cilium_version: "1.19.1"
+cilium_namespace: kube-system
+
+# ── Flux ───────────────────────────────────────────────────────────────────────
+flux_operator_version: "0.43.0"
+flux_operator_namespace: flux-system
+flux_version: "2.x"
+flux_git_url: ""
+flux_git_branch: "main"
+flux_git_path: "cluster"
+flux_github_username: ""
+
+# ── System ─────────────────────────────────────────────────────────────────────
+timezone: "Europe/Oslo"

@@ -1,0 +1,134 @@
+---
+# ── Flux Operator ──────────────────────────────────────────────────────────────
+# Installs the Flux Operator via Helm, then applies the FluxInstance and
+# github-credentials secret. Once applied, Flux reconciles cluster/ from
+# main and the entire homelab stack comes up automatically.
+
+# Add the controlplane Helm repo which hosts the flux-operator chart
+- name: Add Flux operator Helm repo
+  kubernetes.core.helm_repository:
+    name: controlplane
+    repo_url: https://controlplane.github.io/charts
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+# Create flux-system namespace before installing the operator
+- name: Create flux-system namespace
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: Namespace
+    name: "{{ flux_operator_namespace }}"
+    state: present
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+# Install the Flux operator — this only installs the operator itself,
+# not Flux controllers. Those are managed by the FluxInstance below.
+- name: Install Flux operator
+  kubernetes.core.helm:
+    name: flux-operator
+    chart_ref: controlplane/flux-operator
+    chart_version: "{{ flux_operator_version }}"
+    release_namespace: "{{ flux_operator_namespace }}"
+    create_namespace: false
+    wait: true
+    timeout: "3m0s"
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+# ── github-credentials secret ──────────────────────────────────────────────────
+# This is the secret referenced by pullSecret in the FluxInstance sync block.
+# flux_github_token comes from group_vars/all/env.yaml (gitignored)
+
+- name: Create github-credentials secret
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: github-credentials
+        namespace: "{{ flux_operator_namespace }}"
+      type: Opaque
+      stringData:
+        username: git
+        password: "{{ flux_github_token }}"
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  no_log: true
+
+# ── FluxInstance ───────────────────────────────────────────────────────────────
+# Exact copy of cluster/flux/FluxInstance.yaml
+# Once applied the operator installs Flux controllers and begins reconciling
+# cluster/ from refs/heads/main
+
+- name: Apply FluxInstance
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: fluxcd.controlplane.io/v1
+      kind: FluxInstance
+      metadata:
+        name: flux
+        namespace: "{{ flux_operator_namespace }}"
+        annotations:
+          fluxcd.controlplane.io/reconcile: "enabled"
+          fluxcd.controlplane.io/reconcileEvery: "1h"
+          fluxcd.controlplane.io/reconcileTimeout: "5m"
+      spec:
+        distribution:
+          version: "{{ flux_version }}"
+          registry: ghcr.io/fluxcd
+        components:
+          - source-controller
+          - kustomize-controller
+          - helm-controller
+          - notification-controller
+          - image-reflector-controller
+          - image-automation-controller
+        cluster:
+          type: kubernetes
+          size: medium
+          multitenant: false
+          networkPolicy: true
+          domain: cluster.local
+        storage:
+          class: local-path
+          size: 10Gi
+        commonMetadata:
+          labels:
+            app.kubernetes.io/name: flux
+        kustomize:
+          patches:
+            - target:
+                kind: Deployment
+              patch: |
+                - op: replace
+                  path: /spec/template/spec/nodeSelector
+                  value:
+                    kubernetes.io/os: linux
+                - op: add
+                  path: /spec/template/spec/tolerations
+                  value:
+                    - key: "CriticalAddonsOnly"
+                      operator: "Exists"
+        sync:
+          kind: GitRepository
+          url: "{{ flux_git_url }}"
+          ref: "refs/heads/{{ flux_git_branch }}"
+          path: "{{ flux_git_path }}"
+          pullSecret: github-credentials
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+# Wait for Flux controllers to be available before finishing
+- name: Wait for Flux controllers to be ready
+  ansible.builtin.command: >
+    kubectl wait deployment
+    --namespace {{ flux_operator_namespace }}
+    --all
+    --for=condition=Available
+    --timeout=180s
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  changed_when: false

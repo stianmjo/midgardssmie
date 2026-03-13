@@ -1,0 +1,37 @@
+all:
+  vars:
+    # Private key on the machine running this playbook
+    ansible_ssh_private_key_file: ~/.ssh/id_ed25519
+
+  children:
+    masters:
+      hosts:
+        rammie:
+          # IP of the master node
+          ansible_host: 10.0.1.23
+
+          # Username on the master node
+          ansible_user: ubuntu
+
+    workers:
+      hosts:
+        node1:
+          # IP of target host
+          ansible_host:
+
+          # Username on this node
+          ansible_user:
+
+        node2:
+          # IP of target host
+          ansible_host:
+
+          # Username on this node
+          ansible_user:
+
+        node3:
+          # IP of target host
+          ansible_host:
+
+          # Username on this node
+          ansible_user:
